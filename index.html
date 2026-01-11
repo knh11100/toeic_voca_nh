@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TOEIC Word Defender - Cloud</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;700;900&display=swap');
+        body {
+            font-family: 'Pretendard', sans-serif;
+            touch-action: manipulation;
+            overflow: hidden;
+            background-color: #0f172a;
+        }
+        #game-container {
+            position: relative;
+            width: 100%;
+            height: 100vh;
+            max-width: 500px;
+            margin: 0 auto;
+            background: radial-gradient(circle at top, #1e3a8a, #0f172a);
+            overflow: hidden;
+            border-left: 1px solid #334155;
+            border-right: 1px solid #334155;
+        }
+        .word-node {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 10px 20px;
+            border-radius: 99px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+            font-weight: 800;
+            color: #1e3a8a;
+            border: 2px solid #fbbf24;
+            white-space: nowrap;
+        }
+        .explosion {
+            position: absolute;
+            pointer-events: none;
+            animation: explode 0.6s cubic-bezier(0.17, 0.67, 0.83, 0.67) forwards;
+        }
+        @keyframes explode {
+            0% { transform: scale(0.5); opacity: 1; }
+            100% { transform: scale(2.5); opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <!-- UI Overlay -->
+    <div class="absolute top-4 left-4 right-4 flex justify-between items-center text-white z-10">
+        <div>
+            <div class="text-xs opacity-70" id="user-status">연결 중...</div>
+            <div class="text-xl font-black text-yellow-400" id="score">0</div>
+        </div>
+        <div class="text-right">
+            <div class="text-xs opacity-70 text-red-400">LIFE</div>
+            <div class="text-lg tracking-widest" id="lives">❤️❤️❤️</div>
+        </div>
+    </div>
+
+    <!-- Start Screen -->
+    <div id="start-screen" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/95 z-20 text-white p-8 text-center">
+        <h1 class="text-5xl font-black mb-2 italic tracking-tighter">TOEIC<br><span class="text-yellow-400">DEFENDER</span></h1>
+        <p class="mb-8 text-slate-300 text-sm">뜻을 입력하고 엔터를 치세요!</p>
+        
+        <div class="w-full max-w-xs bg-white/5 p-4 rounded-2xl mb-8 border border-white/10 text-left">
+            <h3 class="text-xs font-bold text-yellow-400 mb-2 uppercase tracking-widest">Global Rankings</h3>
+            <div id="ranking-list" class="space-y-1 text-sm">
+                <p class="text-xs opacity-50">랭킹을 불러오는 중...</p>
+            </div>
+        </div>
+
+        <button id="start-btn" class="w-full max-w-xs bg-yellow-500 hover:bg-yellow-400 text-blue-950 font-black py-4 px-8 rounded-2xl text-xl transition-all active:scale-95 shadow-lg shadow-yellow-500/20">
+            게임 시작
+        </button>
+    </div>
+
+    <!-- Game Over Screen -->
+    <div id="game-over-screen" class="hidden absolute inset-0 flex flex-col items-center justify-center bg-slate-950/98 z-30 text-white p-8 text-center">
+        <h2 class="text-5xl font-black mb-2 text-red-500">GAME OVER</h2>
+        <div class="text-2xl mb-8">최종 점수: <span id="final-score" class="text-yellow-400 font-bold">0</span></div>
+        
+        <button id="restart-btn" class="w-full max-w-xs bg-white text-slate-900 font-black py-4 px-8 rounded-2xl text-xl hover:bg-slate-200 transition-transform active:scale-95">
+            다시 도전
+        </button>
+    </div>
+
+    <!-- Game Area -->
+    <div id="game-area" class="relative w-full h-full"></div>
+
+    <!-- Input Area -->
+    <div class="absolute bottom-8 left-0 right-0 px-6 z-40">
+        <input type="text" id="answer-input" placeholder="정답 입력..." 
+               class="w-full p-5 rounded-2xl text-lg shadow-2xl focus:outline-none focus:ring-4 focus:ring-yellow-500 text-center bg-white/95 text-slate-900 font-bold"
+               autocomplete="off">
+    </div>
+</div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // --- Firebase Initialization (Using Global Vars) ---
+    const firebaseConfig = JSON.parse(__firebase_config);
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'toeic-defender-default';
+
+    let currentUser = null;
+    let score = 0;
+    let lives = 3;
+    let gameActive = false;
+    let fallingWords = [];
+    let speedMultiplier = 1;
+    let spawnRate = 2000;
+    let lastSpawnTime = 0;
+
+    const wordList = [
+        { en: "Mandatory", ko: ["의무적인", "필수의"] },
+        { en: "Incentive", ko: ["혜택", "장려금", "보상"] },
+        { en: "Compliance", ko: ["준수", "따름"] },
+        { en: "Confidential", ko: ["기밀의", "비밀의"] },
+        { en: "Implement", ko: ["시행하다", "실행하다"] },
+        { en: "Appreciation", ko: ["감사", "평가"] },
+        { en: "Procrastinate", ko: ["미루다", "지연시키다"] },
+        { en: "Versatile", ko: ["다재다능한", "용도가 많은"] },
+        { en: "Reliability", ko: ["신뢰성", "확실성"] },
+        { en: "Preliminary", ko: ["예비의", "서두의"] },
+        { en: "Negotiate", ko: ["협상하다"] },
+        { en: "Strategy", ko: ["전략"] },
+        { en: "Expansion", ko: ["확장", "팽창"] },
+        { en: "Affordable", ko: ["저렴한", "가격이 적당한"] },
+        { en: "Authorize", ko: ["승인하다"] },
+        { en: "Collaborate", ko: ["협력하다"] }
+    ];
+
+    const gameArea = document.getElementById('game-area');
+    const inputEl = document.getElementById('answer-input');
+    const scoreEl = document.getElementById('score');
+    const livesEl = document.getElementById('lives');
+    const rankingList = document.getElementById('ranking-list');
+    const userStatus = document.getElementById('user-status');
+
+    // --- Auth & Data Flow ---
+    const initAuth = async () => {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+            await signInAnonymously(auth);
+        }
+    };
+
+    onAuthStateChanged(auth, (user) => {
+        currentUser = user;
+        if (user) {
+            userStatus.innerText = `User: ${user.uid.substring(0, 6)}`;
+            setupRankingListener();
+        }
+    });
+
+    function setupRankingListener() {
+        if (!currentUser) return;
+        const rankingRef = collection(db, 'artifacts', appId, 'public', 'data', 'rankings');
+        onSnapshot(rankingRef, (snapshot) => {
+            const data = [];
+            snapshot.forEach(doc => data.push(doc.data()));
+            data.sort((a, b) => b.score - a.score);
+            
+            rankingList.innerHTML = data.slice(0, 5).map((r, i) => `
+                <div class="flex justify-between py-1 border-b border-white/5 ${r.uid === currentUser.uid ? 'text-yellow-400 font-bold' : ''}">
+                    <span>${i+1}. ${r.uid.substring(0, 5)}</span>
+                    <span>${r.score}</span>
+                </div>
+            `).join('') || '<p class="text-xs opacity-50">기록이 없습니다.</p>';
+        }, (err) => console.error("Ranking Error", err));
+    }
+
+    async function saveHighScore(finalScore) {
+        if (!currentUser) return;
+        const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'rankings', currentUser.uid);
+        const snap = await getDoc(userRef);
+        if (!snap.exists() || snap.data().score < finalScore) {
+            await setDoc(userRef, { uid: currentUser.uid, score: finalScore, ts: Date.now() });
+        }
+    }
+
+    // --- Game Logic ---
+    function spawnWord() {
+        const wordObj = wordList[Math.floor(Math.random() * wordList.length)];
+        const el = document.createElement('div');
+        el.className = 'word-node';
+        el.innerText = wordObj.en;
+        const x = Math.random() * (gameArea.clientWidth - 120);
+        el.style.left = x + 'px';
+        el.style.top = '-50px';
+        gameArea.appendChild(el);
+        fallingWords.push({ element: el, ko: wordObj.ko, y: -50, speed: (1.2 + Math.random()) * speedMultiplier });
+    }
+
+    function gameLoop(timestamp) {
+        if (!gameActive) return;
+        if (timestamp - lastSpawnTime > spawnRate) {
+            spawnWord();
+            lastSpawnTime = timestamp;
+            spawnRate = Math.max(800, 2000 - (score * 5));
+            speedMultiplier = 1 + (score / 250);
+        }
+        for (let i = fallingWords.length - 1; i >= 0; i--) {
+            const word = fallingWords[i];
+            word.y += word.speed;
+            word.element.style.top = word.y + 'px';
+            if (word.y > gameArea.clientHeight - 80) {
+                lives--;
+                livesEl.innerText = '❤️'.repeat(Math.max(0, lives));
+                word.element.remove();
+                fallingWords.splice(i, 1);
+                if (lives <= 0) endGame();
+            }
+        }
+        requestAnimationFrame(gameLoop);
+    }
+
+    function endGame() {
+        gameActive = false;
+        document.getElementById('final-score').innerText = score;
+        document.getElementById('game-over-screen').classList.remove('hidden');
+        saveHighScore(score);
+    }
+
+    window.startGame = () => {
+        score = 0; lives = 3; speedMultiplier = 1; fallingWords = []; gameActive = true;
+        scoreEl.innerText = '0'; livesEl.innerText = '❤️❤️❤️';
+        gameArea.innerHTML = '';
+        document.getElementById('start-screen').classList.add('hidden');
+        document.getElementById('game-over-screen').classList.add('hidden');
+        inputEl.value = '';
+        inputEl.focus();
+        requestAnimationFrame(gameLoop);
+    };
+
+    inputEl.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            const val = inputEl.value.trim();
+            const idx = fallingWords.findIndex(w => w.ko.some(k => val === k || val === k.replace(/하다/g, '')));
+            if (idx !== -1) {
+                score += 10;
+                scoreEl.innerText = score;
+                const word = fallingWords[idx];
+                const exp = document.createElement('div');
+                exp.className = 'explosion bg-yellow-400 w-10 h-10 rounded-full flex items-center justify-center font-bold text-xs text-blue-900';
+                exp.style.left = word.element.style.left;
+                exp.style.top = word.element.style.top;
+                exp.innerText = '+10';
+                gameArea.appendChild(exp);
+                setTimeout(() => exp.remove(), 600);
+                word.element.remove();
+                fallingWords.splice(idx, 1);
+                inputEl.value = '';
+            }
+        }
+    });
+
+    document.getElementById('start-btn').onclick = window.startGame;
+    document.getElementById('restart-btn').onclick = window.startGame;
+
+    initAuth();
+</script>
+</body>
+</html>
+
